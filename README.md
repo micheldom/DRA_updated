@@ -4,7 +4,7 @@ By Choubo Ding, Guansong Pang, Chunhua Shen
 Official PyTorch implementation of ["Catching Both Gray and Black Swans: Open-set Supervised Anomaly Detection"](https://arxiv.org/abs/2203.14506).
 
 ## Prerequisites 
-This code is written in `Python 3.7` and requires the packages listed in `requirements.txt`. Install with `pip install -r
+This code is written in `Python 3.11` and requires the packages listed in `requirements.txt`. Install with `pip install -r
 requirements.txt` preferably in a virtualenv.
 
 ## Run

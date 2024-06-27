@@ -15,6 +15,7 @@ from dataloaders.dataloader import initDataloader
 from modeling.net import DRA
 from modeling.layers import build_criterion
 
+# Directory to save weights
 WEIGHT_DIR = Path('./weights')
 
 class Trainer:
@@ -22,9 +23,11 @@ class Trainer:
         self.args = args
         self.device = torch.device('cuda' if args.cuda else 'cpu')
         
+        # Initialize data loaders
         kwargs = {'num_workers': args.workers}
         self.train_loader, self.test_loader = initDataloader.build(args, **kwargs)
         
+        # Initialize reference loader if needed
         if self.args.total_heads == 4:
             temp_args = args
             temp_args.batch_size = self.args.nRef
@@ -32,17 +35,19 @@ class Trainer:
             self.ref_loader, _ = initDataloader.build(temp_args, **kwargs)
             self.ref = iter(self.ref_loader)
 
+        # Initialize model, criterion, optimizer, and scheduler
         self.model = DRA(args, backbone=self.args.backbone).to(self.device)
 
         if self.args.pretrain_dir:
             self.model.load_state_dict(torch.load(self.args.pretrain_dir))
-            print(f'Load pretrain weight from: {self.args.pretrain_dir}')
+            print(f'Loaded pretrain weights from: {self.args.pretrain_dir}')
 
         self.criterion = build_criterion(args.criterion).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.0002, weight_decay=1e-5)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.1)
 
     def generate_target(self, target, eval=False):
+        # Generate targets for training or evaluation
         targets = []
         if eval:
             targets.extend([target == 0, target, target, target])
@@ -65,6 +70,7 @@ class Trainer:
         for sample in tbar:
             image, target = sample['image'].to(self.device), sample['label'].to(self.device)
 
+            # Concatenate reference images if needed
             if self.args.total_heads == 4:
                 try:
                     ref_image = next(self.ref)['image'].to(self.device)
@@ -73,23 +79,27 @@ class Trainer:
                     ref_image = next(self.ref)['image'].to(self.device)
                 image = torch.cat([ref_image, image], dim=0)
 
+            # Forward pass
             outputs = self.model(image, target)
             targets = self.generate_target(target)
 
+            # Calculate losses
             losses = [
                 self.criterion(F.softmax(outputs[i], dim=1), targets[i].long()) if self.args.criterion == 'CE'
                 else self.criterion(outputs[i], targets[i].float())
                 for i in range(self.args.total_heads)
             ]
 
+            # Sum losses and backpropagate
             loss = torch.sum(torch.cat([l.view(-1, 1) for l in losses]))
-
+            
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             self.scheduler.step()
 
+            # Accumulate losses
             train_loss += loss.item()
             for i in range(self.args.total_heads):
                 class_loss[i] += losses[i].item()
@@ -97,6 +107,7 @@ class Trainer:
             tbar.set_postfix(train_loss=train_loss / (len(tbar) + 1))
 
     def normalization(self, data):
+        # Placeholder for normalization logic if needed
         return data
 
     def eval(self):
@@ -111,6 +122,7 @@ class Trainer:
             for sample in tbar:
                 image, target = sample['image'].to(self.device), sample['label'].to(self.device)
 
+                # Concatenate reference images if needed
                 if self.args.total_heads == 4:
                     try:
                         ref_image = next(self.ref)['image'].to(self.device)
@@ -119,33 +131,40 @@ class Trainer:
                         ref_image = next(self.ref)['image'].to(self.device)
                     image = torch.cat([ref_image, image], dim=0)
 
+                # Forward pass
                 outputs = self.model(image, target)
                 targets = self.generate_target(target, eval=True)
 
+                # Calculate losses
                 losses = [
                     self.criterion(F.softmax(outputs[i], dim=1), targets[i].long()) if self.args.criterion == 'CE'
                     else self.criterion(outputs[i], targets[i].float())
                     for i in range(self.args.total_heads)
                 ]
 
+                # Sum losses and accumulate
                 loss = sum(losses)
                 test_loss += loss.item()
                 tbar.set_postfix(test_loss=test_loss / (len(tbar) + 1))
 
+                # Collect predictions
                 for i in range(self.args.total_heads):
                     data = -1 * outputs[i].data.cpu().numpy() if i == 0 else outputs[i].data.cpu().numpy()
                     class_pred[i] = np.append(class_pred[i], data)
                 total_target = np.append(total_target, target.cpu().numpy())
 
+        # Normalize and aggregate predictions
         total_pred = self.normalization(class_pred[0])
         for i in range(1, self.args.total_heads):
             total_pred += self.normalization(class_pred[i])
 
+        # Save results
         results_path = Path(self.args.experiment_dir) / 'result.txt'
         with results_path.open('a+', encoding="utf-8") as w:
             for label, score in zip(total_target, total_pred):
                 w.write(f'{label}   {score}\n')
 
+        # Calculate and plot performance metrics
         total_roc, total_pr = aucPerformance(total_pred, total_target)
 
         normal_mask = total_target == 0
@@ -158,12 +177,15 @@ class Trainer:
         return total_roc, total_pr
 
     def save_weights(self, filename):
+        # Save model weights to the specified file
         torch.save(self.model.state_dict(), Path(self.args.experiment_dir) / filename)
 
     def load_weights(self, filename):
+        # Load model weights from the specified file
         self.model.load_state_dict(torch.load(Path(WEIGHT_DIR) / filename))
 
     def init_network_weights_from_pretraining(self):
+        # Initialize network weights from a pretrained model
         net_dict = self.model.state_dict()
         ae_net_dict = self.ae_model.state_dict()
         ae_net_dict = {k: v for k, v in ae_net_dict.items() if k in net_dict}
@@ -171,6 +193,7 @@ class Trainer:
         self.model.load_state_dict(net_dict)
 
 def aucPerformance(mse, labels, prt=True):
+    # Calculate AUC-ROC and AUC-PR scores
     roc_auc = roc_auc_score(labels, mse)
     ap = average_precision_score(labels, mse)
     if prt:
@@ -187,7 +210,7 @@ if __name__ == '__main__':
     parser.add_argument("--test_rate", type=float, default=0.0, help="outlier contamination rate in training data")
     parser.add_argument("--dataset", type=str, default='mvtecad', help="dataset name")
     parser.add_argument("--ramdn_seed", type=int, default=42, help="random seed number")
-    parser.add_argument('--workers', type=int, default=4, metavar='N', help='dataloader threads')
+    parser.add_argument('--workers', type=int, default=2, metavar='N', help='dataloader threads')
     parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
     parser.add_argument('--savename', type=str, default='model.pkl', help="save model name")
     parser.add_argument('--dataset_root', type=str, default='./data/mvtec_anomaly_detection', help="dataset root")
@@ -210,6 +233,7 @@ if __name__ == '__main__':
     
     trainer = Trainer(args)
 
+    # Save experiment settings
     argsDict = args.__dict__
     experiment_dir = Path(args.experiment_dir)
     experiment_dir.mkdir(parents=True, exist_ok=True)
@@ -222,8 +246,10 @@ if __name__ == '__main__':
 
     print(f'Total Epochs: {trainer.args.epochs}')
     
+    # Training loop
     for epoch in range(trainer.args.epochs):
         trainer.training(epoch)
     
+    # Evaluation and saving results
     trainer.eval()
     trainer.save_weights(args.savename)

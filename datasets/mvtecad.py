@@ -1,155 +1,176 @@
+import os
+import random
 import numpy as np
-import os, sys
-from datasets.base_dataset import BaseADDataset
 from PIL import Image
 from torchvision import transforms
+from datasets.base_dataset import BaseADDataset
 from datasets.cutmix import CutMix
-import random
+
 
 class MVTecAD(BaseADDataset):
 
-    def __init__(self, args, train = True):
-        super(MVTecAD).__init__()
+    def __init__(self, args, train=True):
+        # Initialize the MVTecAD dataset.
+        # Args:
+        #     args: Command line arguments or configuration object.
+        #     train (bool): Indicates whether the dataset is for training or testing.
+
+        super().__init__()
         self.args = args
         self.train = train
-        self.classname = self.args.classname
-        self.know_class = self.args.know_class
-        self.pollution_rate = self.args.cont_rate
-        if self.args.test_threshold == 0 and self.args.test_rate == 0:
-            self.test_threshold = self.args.nAnomaly
+        self.classname = args.classname
+        self.know_class = args.know_class
+        self.pollution_rate = args.cont_rate
+        
+        # Determine the test threshold
+        if args.test_threshold == 0 and args.test_rate == 0:
+            self.test_threshold = args.nAnomaly
         else:
-            self.test_threshold = self.args.test_threshold
+            self.test_threshold = args.test_threshold
 
-        self.root = os.path.join(self.args.dataset_root, self.classname)
-        self.transform = self.transform_train() if self.train else self.transform_test()
-        self.transform_pseudo = self.transform_pseudo()
+        self.root = os.path.join(args.dataset_root, self.classname)
+        
+        # Set transformations based on training or testing mode
+        self.transform = self._get_transform()
+        self.transform_pseudo = self._get_transform_pseudo()
 
-        normal_data = list()
-        split = 'train'
-        normal_files = os.listdir(os.path.join(self.root, split, 'good'))
-        for file in normal_files:
-            if 'png' in file[-3:] or 'PNG' in file[-3:] or 'jpg' in file[-3:] or 'npy' in file[-3:]:
-                normal_data.append(split + '/good/' + file)
+        # Load normal training data
+        normal_data = self._load_data('train')
 
-        self.nPollution = int((len(normal_data)/(1-self.pollution_rate)) * self.pollution_rate)
-        if self.test_threshold==0 and self.args.test_rate>0:
-            self.test_threshold = int((len(normal_data)/(1-self.args.test_rate)) * self.args.test_rate) + self.args.nAnomaly
+        # Calculate the number of polluted samples
+        self.nPollution = int(len(normal_data) / (1 - self.pollution_rate) * self.pollution_rate)
+        
+        # Adjust test threshold if necessary
+        if self.test_threshold == 0 and args.test_rate > 0:
+            self.test_threshold = int(len(normal_data) / (1 - args.test_rate) * args.test_rate) + args.nAnomaly
 
-        self.ood_data = self.get_ood_data()
+        self.ood_data = self._get_ood_data()
 
-        if self.train is False:
-            normal_data = list()
-            split = 'test'
-            normal_files = os.listdir(os.path.join(self.root, split, 'good'))
-            for file in normal_files:
-                if 'png' in file[-3:] or 'PNG' in file[-3:] or 'jpg' in file[-3:] or 'npy' in file[-3:]:
-                    normal_data.append(split + '/good/' + file)
+        # Load normal testing data if in testing mode
+        if not self.train:
+            normal_data = self._load_data('test')
 
-        outlier_data, pollution_data = self.split_outlier()
-        outlier_data.sort()
+        # Split the outlier data and combine it with normal data
+        outlier_data, pollution_data = self._split_outlier()
+        normal_data += pollution_data
 
-        normal_data = normal_data + pollution_data
+        # Create labels for the data
+        normal_labels = np.zeros(len(normal_data)).tolist()
+        outlier_labels = np.ones(len(outlier_data)).tolist()
 
-        normal_label = np.zeros(len(normal_data)).tolist()
-        outlier_label = np.ones(len(outlier_data)).tolist()
-
+        # Combine data and labels
         self.images = normal_data + outlier_data
-        self.labels = np.array(normal_label + outlier_label)
+        self.labels = np.array(normal_labels + outlier_labels)
         self.normal_idx = np.argwhere(self.labels == 0).flatten()
         self.outlier_idx = np.argwhere(self.labels == 1).flatten()
 
-    def get_ood_data(self):
-        ood_data = list()
+    def _load_data(self, split):
+        # Load normal data from the specified split (train/test).
+        # Args:
+        #      split (str): The data split to load ('train' or 'test').
+        # Returns:
+        #      list: A list of file paths for normal data.
+
+        data = []
+        for file in os.listdir(os.path.join(self.root, split, 'good')):
+            if file.lower().endswith(('png', 'jpg', 'npy')):
+                data.append(f"{split}/good/{file}")
+        return data
+
+    def _get_ood_data(self):
+        # Load out-of-distribution (OOD) data from other classes.
+        # Returns:
+        #     list: A list of file paths for OOD data.
+
         if self.args.outlier_root is None:
             return None
-        dataset_classes = os.listdir(self.args.outlier_root)
-        for cl in dataset_classes:
-            if cl == self.args.classname:
+        ood_data = []
+        for cls in os.listdir(self.args.outlier_root):
+            if cls == self.classname:
                 continue
-            cl_root = os.path.join(self.args.outlier_root, cl, 'train', 'good')
-            ood_file = os.listdir(cl_root)
-            for file in ood_file:
-                if 'png' in file[-3:] or 'PNG' in file[-3:] or 'jpg' in file[-3:] or 'npy' in file[-3:]:
-                    ood_data.append(os.path.join(cl_root, file))
+            cls_path = os.path.join(self.args.outlier_root, cls, 'train', 'good')
+            ood_data += [os.path.join(cls_path, f) for f in os.listdir(cls_path) if f.lower().endswith(('png', 'jpg', 'npy'))]
         return ood_data
 
-    def split_outlier(self):
-        outlier_data_dir = os.path.join(self.root, 'test')
-        outlier_classes = os.listdir(outlier_data_dir)
-        if self.know_class in outlier_classes:
-            print("Know outlier class: " + self.know_class)
-            outlier_data = list()
-            know_class_data = list()
-            for cl in outlier_classes:
-                if cl == 'good':
-                    continue
-                outlier_file = os.listdir(os.path.join(outlier_data_dir, cl))
-                for file in outlier_file:
-                    if 'png' in file[-3:] or 'PNG' in file[-3:] or 'jpg' in file[-3:] or 'npy' in file[-3:]:
-                        if cl == self.know_class:
-                            know_class_data.append('test/' + cl + '/' + file)
-                        else:
-                            outlier_data.append('test/' + cl + '/' + file)
-            np.random.RandomState(self.args.ramdn_seed).shuffle(know_class_data)
-            know_outlier = know_class_data[0:self.args.nAnomaly]
-            unknow_outlier = outlier_data
-            if self.train:
-                return know_outlier, list()
-            else:
-                return unknow_outlier, list()
+    def _split_outlier(self):
+        # Split the outlier data into known and unknown outliers.
+        # Returns:
+        #     tuple: Lists of known and unknown outlier data.
 
-
-        outlier_data = list()
-        for cl in outlier_classes:
-            if cl == 'good':
+        outlier_data = []
+        know_class_data = []
+        outlier_classes = os.listdir(os.path.join(self.root, 'test'))
+        
+        for cls in outlier_classes:
+            if cls == 'good':
                 continue
-            outlier_file = os.listdir(os.path.join(outlier_data_dir, cl))
-            for file in outlier_file:
-                if 'png' in file[-3:] or 'PNG' in file[-3:] or 'jpg' in file[-3:] or 'npy' in file[-3:]:
-                    outlier_data.append('test/' + cl + '/' + file)
-        np.random.RandomState(self.args.ramdn_seed).shuffle(outlier_data)
+            cls_files = [f"test/{cls}/{file}" for file in os.listdir(os.path.join(self.root, 'test', cls)) if file.lower().endswith(('png', 'jpg', 'npy'))]
+            if cls == self.know_class:
+                know_class_data += cls_files
+            else:
+                outlier_data += cls_files
+        
+        random_state = np.random.RandomState(self.args.ramdn_seed)
+        random_state.shuffle(know_class_data)
+        
+        know_outlier = know_class_data[:self.args.nAnomaly]
+        unknown_outlier = outlier_data
+        
         if self.train:
-            return outlier_data[0:self.args.nAnomaly], outlier_data[self.args.nAnomaly:self.args.nAnomaly + self.nPollution]
+            return know_outlier, []
         else:
-            return outlier_data[self.test_threshold:], list()
+            return unknown_outlier, []
 
-    def load_image(self, path):
-        if 'npy' in path[-3:]:
+    def _get_transform(self):
+        # Get the data transformation for training or testing.
+        # Returns:
+        #     transforms.Compose: The composed transformations.
+
+        if self.train:
+            return transforms.Compose([
+                transforms.Resize((self.args.img_size, self.args.img_size)),
+                transforms.RandomRotation(180),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+        else:
+            return transforms.Compose([
+                transforms.Resize((self.args.img_size, self.args.img_size)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+
+    def _get_transform_pseudo(self):
+        # Get the data transformation for pseudo-labeled data.
+        # Returns:
+        #     transforms.Compose: The composed transformations.
+
+        return transforms.Compose([
+            transforms.Resize((self.args.img_size, self.args.img_size)),
+            CutMix(),
+            transforms.RandomRotation(180),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+
+    def load_image(self, path):        
+        if path.lower().endswith('npy'):
             img = np.load(path).astype(np.uint8)
             img = img[:, :, :3]
             return Image.fromarray(img)
         return Image.open(path).convert('RGB')
 
-    def transform_train(self):
-        composed_transforms = transforms.Compose([
-            transforms.Resize((self.args.img_size,self.args.img_size)),
-            transforms.RandomRotation(180),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-        return composed_transforms
-
-    def transform_pseudo(self):
-        composed_transforms = transforms.Compose([
-            transforms.Resize((self.args.img_size,self.args.img_size)),
-            CutMix(),
-            transforms.RandomRotation(180),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-        return composed_transforms
-
-    def transform_test(self):
-        composed_transforms = transforms.Compose([
-            transforms.Resize((self.args.img_size, self.args.img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-        return composed_transforms
-
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, index):
-        rnd = random.randint(0, 1)
-        if index in self.normal_idx and rnd == 0 and self.train:
+        # Get a sample from the dataset at the specified index.
+        # Args:
+        #     index (int): The index of the sample.
+        # Returns:
+        #     dict: A dictionary containing the image and label.
+
+        if self.train and index in self.normal_idx and random.randint(0, 1) == 0:
             if self.ood_data is None:
                 index = random.choice(self.normal_idx)
                 image = self.load_image(os.path.join(self.root, self.images[index]))
@@ -162,5 +183,4 @@ class MVTecAD(BaseADDataset):
             image = self.load_image(os.path.join(self.root, self.images[index]))
             transform = self.transform
             label = self.labels[index]
-        sample = {'image': transform(image), 'label': label}
-        return sample
+        return {'image': transform(image), 'label': label}

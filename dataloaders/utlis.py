@@ -17,10 +17,10 @@ class BalancedBatchSampler(Sampler):
 
         self.normal_generator = self.randomGenerator(self.dataset.normal_idx)
         self.outlier_generator = self.randomGenerator(self.dataset.outlier_idx)
-        if self.cfg.nAnomaly != 0:
-            self.n_normal = 2 * self.cfg.batch_size // 3
-            self.n_outlier = self.cfg.batch_size - self.n_normal
-        else:
+        if self.cfg.nAnomaly != 0:                                  # nAnomaly = 
+            self.n_normal = 2 * self.cfg.batch_size // 3            # batch_size = 5
+            self.n_outlier = self.cfg.batch_size - self.n_normal    # n_normal = 2
+        else:                                                       # n_outlier = 3
             self.n_normal = self.cfg.batch_size
             self.n_outlier = 0
 

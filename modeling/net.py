@@ -26,7 +26,7 @@ class PlainHead(nn.Module):
         self.scoring = nn.Conv2d(in_channelshannels=in_dim, out_channels=1, kernel_size=1, padding=0)
         self.topk_rate = topk_rate
 
-    def dforward(self, x):
+    def forward(self, x):
         # Scoring anomalies and selecting top-k
         x = self.scoring(x)
         x = x.view(int(x.size(0)), -1)
@@ -72,10 +72,10 @@ class DRA(nn.Module):
             # Resize if multi-scale training
             image_scaled = F.interpolate(image, size=self.cfg.img_size // (2 ** s)) if s > 0 else image
 
-            # Extract feature map from backbone
+            # Extract feature map from backbone -> ResNet-18
             feature = self.feature_extractor(image_scaled)
 
-            # 
+            # Splits the feature map into features from ref. images and actual image
             ref_feature = feature[:self.cfg.nRef, :, :, :]
             feature = feature[self.cfg.nRef:, :, :, :]
 
